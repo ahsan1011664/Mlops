@@ -51,9 +51,10 @@ jobs:
           echo "test_r2=0.82" >> $GITHUB_OUTPUT
         continue-on-error: true
       
-      - name: Install CML
+      - name: Install CML and bc
         run: |
           npm install -g @dvcorg/cml
+          sudo apt-get update && sudo apt-get install -y bc
       
       - name: Compare models with CML
         env:
@@ -61,25 +62,43 @@ jobs:
         run: |
           PROD_RMSE=${{ steps.production-metrics.outputs.test_rmse }}
           NEW_RMSE=${{ steps.new-metrics.outputs.test_rmse }}
+          PROD_MAE=${{ steps.production-metrics.outputs.test_mae }}
+          PROD_R2=${{ steps.production-metrics.outputs.test_r2 }}
+          NEW_MAE=${{ steps.new-metrics.outputs.test_mae }}
+          NEW_R2=${{ steps.new-metrics.outputs.test_r2 }}
           
-          cml comment create <<EOF
-          ## Model Performance Comparison
+          # Calculate RMSE change
+          RMSE_CHANGE=$(echo "$NEW_RMSE - $PROD_RMSE" | bc)
           
-          ### Production Model (Current)
-          - **RMSE:** $PROD_RMSE
-          - **MAE:** ${{ steps.production-metrics.outputs.test_mae }}
-          - **R²:** ${{ steps.production-metrics.outputs.test_r2 }}
+          # Determine status
+          if (( $(echo "$NEW_RMSE < $PROD_RMSE" | bc -l) )); then
+            STATUS="✅ Model improved"
+          else
+            STATUS="❌ Model degraded"
+          fi
           
-          ### New Model (This PR)
-          - **RMSE:** $NEW_RMSE
-          - **MAE:** ${{ steps.new-metrics.outputs.test_mae }}
-          - **R²:** ${{ steps.new-metrics.outputs.test_r2 }}
+          # Create markdown report file
+          {
+            echo "## Model Performance Comparison"
+            echo ""
+            echo "### Production Model (Current)"
+            echo "- **RMSE:** $PROD_RMSE"
+            echo "- **MAE:** $PROD_MAE"
+            echo "- **R²:** $PROD_R2"
+            echo ""
+            echo "### New Model (This PR)"
+            echo "- **RMSE:** $NEW_RMSE"
+            echo "- **MAE:** $NEW_MAE"
+            echo "- **R²:** $NEW_R2"
+            echo ""
+            echo "### Comparison"
+            echo "- **RMSE change:** $RMSE_CHANGE"
+            echo ""
+            echo "**Status:** $STATUS"
+          } > cml_report.md
           
-          ### Comparison
-          - RMSE change: $(echo "$NEW_RMSE - $PROD_RMSE" | bc)
-          
-          **Status:** $([ $(echo "$NEW_RMSE < $PROD_RMSE" | bc) -eq 1 ] && echo "✅ Model improved" || echo "❌ Model degraded")
-          EOF
+          # Post comment using CML
+          cml comment create --publish cml_report.md
       
       - name: Check if model improved
         run: |
