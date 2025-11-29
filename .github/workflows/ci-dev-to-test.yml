@@ -6,6 +6,11 @@ on:
       - test
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   model-retraining:
     name: Model Retraining and Comparison
@@ -59,6 +64,7 @@ jobs:
       - name: Compare models with CML
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
         run: |
           PROD_RMSE=${{ steps.production-metrics.outputs.test_rmse }}
           NEW_RMSE=${{ steps.new-metrics.outputs.test_rmse }}
