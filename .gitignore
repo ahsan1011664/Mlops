@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Airflow
+airflow.db
+airflow.cfg
+logs/
+*.log
+
+# Data directories (large files)
+raw_data/*.json
+processed_data/*.csv
+processed_data/*.parquet
+models/*.pkl
+models/*.joblib
+models/*.h5
+models/*.json
+models/*_features.json
+
+# DVC
+.dvc/tmp
+.dvc/cache
+.dvcignore
+
+# MLflow
+mlruns/
+mlflow.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Reports (can be large)
+reports/*.html
+reports/*.json
+
+# Monitoring data
+monitoring/prometheus_data/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+/processed_data
