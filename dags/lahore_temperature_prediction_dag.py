@@ -34,6 +34,7 @@ try:
     from transform_data import transform_weather_data
     from generate_profiling_report import generate_and_log_profiling
     from load_to_cloud_storage import upload_processed_data
+    from dvc_operations import version_processed_data
 except ImportError as e:
     print(f"Warning: Could not import modules: {e}")
     # Define stub functions to prevent DAG from failing on import
@@ -46,6 +47,9 @@ except ImportError as e:
     
     def load_to_cloud_storage(*args, **kwargs):
         raise ImportError("load_to_cloud_storage module not available")
+    
+    def version_processed_data(*args, **kwargs):
+        raise ImportError("dvc_operations module not available")
 
 # Configuration
 API_KEY = 'f1f8d5f1208905c5a795ba04a171acdf'
@@ -531,6 +535,33 @@ load_to_storage_task = PythonOperator(
 )
 
 # Task 6: DVC Version Data (Step 3)
+def dvc_add_and_push_task(**context):
+    """
+    DVC Versioning Task: Versions processed dataset using DVC.
+    """
+    try:
+        # Pull processed data path from previous task
+        processed_data_path = context['ti'].xcom_pull(task_ids='transform_data', key='processed_data_path')
+        
+        if not processed_data_path:
+            # Fallback: use default processed_data directory
+            processed_data_path = str(PROCESSED_DATA_DIR)
+        
+        print(f"Versioning processed data with DVC: {processed_data_path}")
+        
+        # Version the processed data
+        success = version_processed_data(processed_data_dir=processed_data_path)
+        
+        if success:
+            print("✓ Data successfully versioned with DVC")
+            context['ti'].xcom_push(key='dvc_versioned', value=True)
+            return True
+        else:
+            raise AirflowException("DVC versioning failed")
+            
+    except Exception as e:
+        raise AirflowException(f"DVC versioning failed: {str(e)}")
+
 dvc_version_data_task = PythonOperator(
     task_id='dvc_version_data',
     python_callable=dvc_add_and_push_task,
