@@ -34,10 +34,14 @@ app = FastAPI(title="Lahore Temperature Prediction API", version="1.0.0")
 # Prometheus Metrics
 REQUEST_COUNT = Counter('prediction_requests_total', 'Total prediction requests', ['status'])
 INFERENCE_LATENCY = Histogram('prediction_latency_seconds', 'Prediction latency')
+DATA_DRIFT_DETECTIONS = Counter('data_drift_detections_total', 'Total data drift detections', ['feature'])
+DRIFT_RATIO = Histogram('data_drift_ratio', 'Ratio of out-of-distribution features per request', buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
 
 # Global model
 model = None
 feature_names = None
+model_version = "N/A"
+feature_statistics = None  # Store feature statistics for drift detection
 
 
 class PredictionRequest(BaseModel):
@@ -52,7 +56,7 @@ class PredictionResponse(BaseModel):
 
 def load_model():
     """Load model from MLflow"""
-    global model, feature_names, model_version
+    global model, feature_names, model_version, feature_statistics
     
     print("Loading model from MLflow...")
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -121,6 +125,18 @@ def load_model():
         elif hasattr(model, 'n_features_in_'):
             feature_names = [f"feature_{i}" for i in range(model.n_features_in_)]
         
+        # Load training data statistics for drift detection
+        # Try to get statistics from MLflow run
+        try:
+            run_id = best_model.run_id
+            run = client.get_run(run_id)
+            # Try to load training data statistics if available
+            # For now, initialize with None - will be set from training data if available
+            feature_statistics = None
+            print(f"  Note: Feature statistics for drift detection will be initialized from first predictions")
+        except:
+            feature_statistics = None
+        
         print(f"✓ Model loaded successfully. Version: {model_version}. Features: {len(feature_names) if feature_names else 'unknown'}")
         
     except Exception as e:
@@ -130,6 +146,7 @@ def load_model():
         model = None
         feature_names = None
         model_version = "N/A"
+        feature_statistics = None
 
 
 @app.on_event("startup")
@@ -143,14 +160,95 @@ async def startup():
 
 @app.get("/")
 async def root():
-    return {"service": "Lahore Temperature Prediction API", "model_loaded": model is not None}
+    return {
+        "service": "Lahore Temperature Prediction API",
+        "model_loaded": model is not None,
+        "model_version": model_version
+    }
 
 
 @app.get("/health")
 async def health():
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "model_version": model_version
+    }
+
+
+def detect_data_drift(features_dict: Dict[str, float]) -> tuple:
+    """
+    Detect data drift by checking if feature values are out-of-distribution.
+    Uses simple statistical method: values outside 3 standard deviations are considered drift.
+    
+    Returns:
+        tuple: (drift_detected: bool, drift_features: list, drift_ratio: float)
+    """
+    global feature_statistics
+    
+    if not feature_names or not feature_statistics:
+        # Initialize statistics from first few predictions (simple approach)
+        # In production, this should be loaded from training data
+        return False, [], 0.0
+    
+    drift_features = []
+    total_features = len(feature_names)
+    
+    for feature_name in feature_names:
+        if feature_name not in features_dict:
+            continue
+            
+        value = features_dict[feature_name]
+        
+        if feature_name in feature_statistics:
+            mean = feature_statistics[feature_name].get('mean', 0)
+            std = feature_statistics[feature_name].get('std', 1)
+            
+            # Check if value is outside 3 standard deviations
+            if std > 0 and abs(value - mean) > 3 * std:
+                drift_features.append(feature_name)
+                DATA_DRIFT_DETECTIONS.labels(feature=feature_name).inc()
+    
+    drift_ratio = len(drift_features) / total_features if total_features > 0 else 0.0
+    return len(drift_features) > 0, drift_features, drift_ratio
+
+
+def update_feature_statistics(features_dict: Dict[str, float]):
+    """Update running statistics for features (simple moving average approach)"""
+    global feature_statistics
+    
+    if not feature_names:
+        return
+    
+    if feature_statistics is None:
+        feature_statistics = {}
+        for feat in feature_names:
+            feature_statistics[feat] = {'mean': 0.0, 'std': 1.0, 'count': 0, 'sum': 0.0, 'sum_sq': 0.0}
+    
+    # Update statistics using Welford's online algorithm
+    for feat in feature_names:
+        if feat not in features_dict:
+            continue
+            
+        value = features_dict[feat]
+        stats = feature_statistics[feat]
+        stats['count'] += 1
+        n = stats['count']
+        
+        # Update mean
+        delta = value - stats['mean']
+        stats['mean'] += delta / n
+        
+        # Update variance
+        delta2 = value - stats['mean']
+        stats['sum_sq'] += delta * delta2
+        
+        if n > 1:
+            stats['std'] = np.sqrt(stats['sum_sq'] / (n - 1))
+        else:
+            stats['std'] = 1.0
 
 
 @app.post("/predict", response_model=PredictionResponse)
@@ -173,6 +271,13 @@ async def predict(request: PredictionRequest):
                 raise HTTPException(status_code=400, detail=f"Missing features: {list(missing)}")
             features_df = features_df[feature_names]
         
+        # Update feature statistics for drift detection
+        update_feature_statistics(request.features)
+        
+        # Detect data drift
+        drift_detected, drift_features, drift_ratio = detect_data_drift(request.features)
+        DRIFT_RATIO.observe(drift_ratio)
+        
         # Predict
         prediction = model.predict(features_df)[0]
         
@@ -183,7 +288,8 @@ async def predict(request: PredictionRequest):
         
         return PredictionResponse(
             prediction=float(prediction),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.utcnow().isoformat(),
+            model_version=model_version
         )
     except HTTPException:
         raise
